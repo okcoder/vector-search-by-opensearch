@@ -1,0 +1,9 @@
+
+###
+GET http://localhost:9200/_cluster/settings?include_defaults=true
+Content-Type: application/json
+
+###
+GET http://localhost:9200/_plugins/_knn/stats/
+
+
