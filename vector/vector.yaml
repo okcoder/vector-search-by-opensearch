@@ -1,0 +1,287 @@
+# Set global options
+data_dir: "/var/lib/vector"
+
+# Vector's API (disabled by default)
+# Enable and try it out with the `vector top` command
+# NOTE: this is _enabled_ for helm chart deployments, see: https://github.com/vectordotdev/helm-charts/blob/develop/charts/vector/examples/datadog-values.yaml#L78-L81
+api:
+  enabled: false
+  # address = "127.0.0.1:8686"
+  playground: false
+
+# Ingest data by tailing one or more files
+sources:
+  knn_stats_source:
+    type: http_client
+    endpoint: http://opensearch:9200/_plugins/_knn/stats/
+    method: GET
+    scrape_interval_secs: 15
+    scrape_timeout_secs: 5
+    decoding:
+      codec: "json"
+
+# Structure and parse via Vector's Remap Language
+# Send structured data to a short-term storage
+transforms:
+  remap_cluster_stats:
+    type: remap
+    inputs:
+      - knn_stats_source
+    source: |-
+      circuit_breaker_triggered = if .circuit_breaker_triggered == true { 1 } else { 0 }
+      . = {"cluster_name": .cluster_name,"circuit_breaker_triggered": circuit_breaker_triggered}
+
+  remap_cluster_node_stats:
+    type: remap
+    inputs:
+      - knn_stats_source
+    source: |-
+      cluster_name = .cluster_name
+      nodes = del(.nodes)
+      . = []
+      for_each(object!(nodes)) -> |node_id, node| {
+        del(node.indices_in_cache)
+        node = set!(node, ["cluster_name"], cluster_name)
+        node = set!(node, ["node_id"], node_id)
+        cache_capacity_reached = if node.cache_capacity_reached == true { 1 } else { 0 }
+        node = set!(node, ["cache_capacity_reached"], cache_capacity_reached)
+        faiss_initialized = if node.faiss_initialized == true { 1 } else { 0 }
+        node = set!(node, ["faiss_initialized"], faiss_initialized)
+        indexing_from_model_degraded = if node.indexing_from_model_degraded == true { 1 } else { 0 }
+        node = set!(node, ["indexing_from_model_degraded"], indexing_from_model_degraded)
+        lucene_initialized = if node.lucene_initialized == true { 1 } else { 0 }
+        node = set!(node, ["lucene_initialized"], lucene_initialized)
+        nmslib_initialized = if node.nmslib_initialized == true { 1 } else { 0 }
+        node = set!(node, ["nmslib_initialized"], nmslib_initialized)
+        model_index_status = if node.model_index_status == "red" { 0 } else if node.model_index_status == "yellow" {1} else { 2 }
+        node = set!(node, ["model_index_status"], model_index_status)
+        .= push(., node)
+      }
+
+  remap_cluster_node_indices_in_cache_stats:
+    type: remap
+    inputs:
+      - knn_stats_source
+    source: |-
+      cluster_name = .cluster_name
+      nodes = del(.nodes)
+      . = []
+      for_each(object!(nodes)) -> |node_id, node| {
+        for_each(object!(node.indices_in_cache)) -> |index, cache| {
+          cache = set!(cache, ["cluster_name"], cluster_name)
+          cache = set!(cache, ["node_id"], node_id)
+          cache = set!(cache, ["index"], index)
+          .= push(., cache)
+        }
+      }
+      log("remap_cluster_node_indices_in_cache_stats"+ encode_json(.))
+
+  cluster_to_metric:
+    type: log_to_metric
+    inputs:
+      - remap_cluster_stats
+    metrics:
+      - type: gauge
+        field: "circuit_breaker_triggered"
+        name: "knn_circuit_breaker_triggered"
+        tags:
+          cluster_name: "{{cluster_name}}"
+
+  cluster_node_to_metric:
+    type: log_to_metric
+    inputs:
+      - remap_cluster_node_stats
+    metrics:
+      - type: gauge
+        field: "total_load_time"
+        name: "knn_total_load_time"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+      - type: counter
+        field: "eviction_count"
+        name: "knn_eviction_count"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+      - type: counter
+        field: "hit_count"
+        name: "knn_hit_count"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+      - type: counter
+        field: "miss_count"
+        name: "knn_miss_count"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+      - type: gauge
+        field: "graph_memory_usage"
+        name: "knn_graph_memory_usage"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+      - type: gauge
+        field: "graph_memory_usage_percentage"
+        name: "knn_graph_memory_usage_percentage"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+      - type: counter
+        field: "graph_index_requests"
+        name: "knn_graph_index_requests"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+      - type: counter
+        field: "graph_index_errors"
+        name: "knn_graph_index_errors"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+      - type: counter
+        field: "graph_query_requests"
+        name: "knn_graph_query_requests"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+      - type: counter
+        field: "graph_query_errors"
+        name: "knn_graph_query_errors"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+      - type: counter
+        field: "knn_query_requests"
+        name: "knn_query_requests"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+      - type: gauge
+        field: "cache_capacity_reached"
+        name: "knn_cache_capacity_reached"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+      - type: counter
+        field: "load_success_count"
+        name: "knn_load_success_count"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+      - type: counter
+        field: "load_exception_count"
+        name: "knn_load_exception_count"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+      - type: counter
+        field: "script_compilations"
+        name: "knn_script_compilations"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+      - type: counter
+        field: "script_compilation_errors"
+        name: "knn_script_compilation_errors"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+      - type: counter
+        field: "script_query_requests"
+        name: "knn_script_query_requests"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+      - type: counter
+        field: "script_query_errors"
+        name: "knn_script_query_errors"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+      - type: gauge
+        field: "nmslib_initialized"
+        name: "knn_nmslib_initialized"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+      - type: gauge
+        field: "faiss_initialized"
+        name: "knn_faiss_initialized"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+      - type: gauge
+        field: "model_index_status"
+        name: "knn_model_index_status"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+      - type: gauge
+        field: "indexing_from_model_degraded"
+        name: "knn_indexing_from_model_degraded"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+      - type: counter
+        field: "training_requests"
+        name: "knn_training_requests"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+      - type: counter
+        field: "training_errors"
+        name: "knn_training_errors"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+      - type: gauge
+        field: "training_memory_usage"
+        name: "knn_training_memory_usage"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+      - type: gauge
+        field: "training_memory_usage_percentage"
+        name: "knn_training_memory_usage_percentage"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+
+  cluster_node_indices_in_cache_to_metric:
+    type: log_to_metric
+    inputs:
+      - remap_cluster_node_indices_in_cache_stats
+    metrics:
+      - type: gauge
+        field: "graph_memory_usage"
+        name: "knn_cache_graph_memory_usage"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+          index: "{{index}}"
+      - type: gauge
+        field: "graph_memory_usage_percentage"
+        name: "knn_cache_graph_memory_usage_percentage"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+          index: "{{index}}"
+      - type: gauge
+        field: "graph_count"
+        name: "knn_cache_graph_count"
+        tags:
+          cluster_name: "{{cluster_name}}"
+          node_id: "{{node_id}}"
+          index: "{{index}}"
+
+sinks:
+  my_sink_id:
+    type: prometheus_exporter
+    inputs:
+      - cluster_to_metric
+      - cluster_node_to_metric
+      - cluster_node_indices_in_cache_to_metric
+    address: 0.0.0.0:9598
+    flush_period_secs: 60

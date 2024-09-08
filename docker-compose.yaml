@@ -1,0 +1,84 @@
+services:
+  opensearch:
+    build: 
+      context: ./opensearch
+      dockerfile: Dockerfile
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+    environment:
+      - "node.name=opensearch"
+      - "plugins.security.disabled=true"
+      - "discovery.type=single-node"
+      - "OPENSEARCH_INITIAL_ADMIN_PASSWORD=Docker-0penSearch"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:2.16.0
+    ports:
+      - "5601:5601"
+    environment:
+      - "OPENSEARCH_HOSTS=http://opensearch:9200"
+      - "DISABLE_SECURITY_DASHBOARDS_PLUGIN=true"
+    depends_on:
+      - opensearch
+
+  elasticsearch_exporter:
+    image: justwatch/elasticsearch_exporter:1.1.0
+    command:
+      - '--es.uri'
+      - 'http://opensearch:9200'
+      - '--es.ssl-skip-verify'
+      - '--es.all'
+      - '--es.snapshots'
+      - '--es.indices'
+    restart: always
+    ports:
+      - "9114:9114"
+    depends_on:
+      - opensearch
+
+  knn_exporter:
+    image: timberio/vector:nightly-alpine
+    volumes:
+      - ./vector:/etc/vector
+    command: -c /etc/vector/vector.yaml
+    ports:
+      - "9598:9598"
+    depends_on:
+      - opensearch
+
+  prometheus:
+    image: prom/prometheus
+    volumes:
+      - ./prometheus/prometheus.yaml:/etc/prometheus/prometheus.yaml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yaml'
+    ports:
+      - "9090:9090"
+    depends_on:
+      - elasticsearch_exporter
+      - knn_exporter
+
+  grafana:
+    image: grafana/grafana
+    volumes:
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources
+#      - ./grafana/dashboards:/var/lib/grafana/dashboards
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_USER=admin
+
+volumes:
+  opensearch-data:
+    driver: local
